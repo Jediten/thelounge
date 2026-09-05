@@ -5,16 +5,50 @@ import {store} from "../store";
 import {extractInputHistory} from "../helpers/inputHistory";
 import {markMsgsRaw, unshiftMany} from "../chan";
 
-socket.on("more", async (data) => {
+// Serializes concurrent "more" (scrollback) responses per channel: each
+// response mutates the same messages/inputHistory arrays, so without a
+// per-channel promise chain two overlapping fetches can interleave (concat +
+// prepend + trim in different orders) and drop or duplicate rows.
+const moreChains = new Map<number, Promise<void>>();
+
+socket.on("more", (data) => {
+	const key = data?.chan;
+	const prev = moreChains.get(key) ?? Promise.resolve();
+	const next = prev
+		.catch(() => undefined)
+		.then(() => handleMore(data))
+		.catch(() => undefined);
+	moreChains.set(key, next);
+
+	// Bound the map: channels that never request again must not leak entries.
+	void next.then(() => {
+		if (moreChains.get(key) === next) {
+			moreChains.delete(key);
+		}
+	});
+});
+
+async function handleMore(data) {
 	const channel = store.getters.findChannel(data.chan)?.channel;
 
 	if (!channel) {
 		return;
 	}
 
-	channel.inputHistory = channel.inputHistory.concat(
-		extractInputHistory(data.messages, 100 - channel.inputHistory.length)
-	);
+	// Remaining capacity can go negative once 100 entries are buffered;
+	// clamp to 0 so extractInputHistory never sees a negative limit.
+	const remaining = Math.max(0, 100 - channel.inputHistory.length);
+
+	if (Array.isArray(data.messages) && data.messages.length > 0 && remaining > 0) {
+		try {
+			channel.inputHistory = channel.inputHistory.concat(
+				extractInputHistory(data.messages, remaining)
+			);
+		} catch {
+			// History is best-effort: never let it break scrollback rendering.
+		}
+	}
+
 	channel.moreHistoryAvailable =
 		data.moreHistoryAvailable ??
 		(data.totalMessages !== undefined &&
@@ -38,9 +72,12 @@ socket.on("more", async (data) => {
 		channel.messages.splice(0, channel.messages.length - maxBuffered);
 	}
 
-	await nextTick();
-	channel.historyLoading = false;
-});
+	try {
+		await nextTick();
+	} finally {
+		channel.historyLoading = false;
+	}
+}
 
 // Stable identity for dedupe: the storage row id when known, otherwise the
 // session id (unique within a session for anything never reloaded).

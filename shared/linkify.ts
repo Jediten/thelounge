@@ -63,8 +63,27 @@ linkify.add("web+", {
 	},
 });
 
+/**
+ * Finds all linkified URLs in text (including fuzzy/bare domains).
+ *
+ * Never throws: non-string input yields [], and linkify exceptions degrade
+ * to [] so message rendering is never broken by parser edge cases.
+ *
+ * @param text - Plain text to scan.
+ * @returns Link parts with start/end offsets and resolved URLs.
+ */
 export function findLinks(text: string) {
-	const matches = linkify.match(text);
+	if (typeof text !== "string" || !text) {
+		return [];
+	}
+
+	let matches: Match[] | null = null;
+
+	try {
+		matches = linkify.match(text);
+	} catch {
+		return [];
+	}
 
 	if (!matches) {
 		return [];
@@ -73,8 +92,27 @@ export function findLinks(text: string) {
 	return matches.map(makeLinkPart);
 }
 
+/**
+ * Finds only links that carry an explicit URI scheme (http:, irc:, ...).
+ *
+ * Same total-failure safety as {@link findLinks}: invalid input or parser
+ * errors yield [].
+ *
+ * @param text - Plain text to scan.
+ * @returns Link parts whose match included a schema.
+ */
 export function findLinksWithSchema(text: string) {
-	const matches = linkify.match(text);
+	if (typeof text !== "string" || !text) {
+		return [];
+	}
+
+	let matches: Match[] | null = null;
+
+	try {
+		matches = linkify.match(text);
+	} catch {
+		return [];
+	}
 
 	if (!matches) {
 		return [];

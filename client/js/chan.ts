@@ -15,15 +15,42 @@ import {extractInputHistory} from "./helpers/inputHistory";
 // (from/text/target/etc.) opts out of Vue's deep-reactivity Proxy wrapping,
 // which is pure overhead for fields that never change. Apply this at every
 // point a message enters a channel's `messages` array.
+/**
+ * Marks a message raw for Vue (keeping `previews` reactive).
+ *
+ * Null-safe: null/undefined inputs pass through untouched so partially-loaded
+ * payloads never throw during channel hydration.
+ *
+ * @param msg - Message to mark.
+ * @returns The same message, marked raw.
+ */
 export function markMsgRaw<T extends SharedMsg>(msg: T): T {
-	if (msg.previews) {
-		msg.previews = reactive(msg.previews) as typeof msg.previews;
+	if (!msg || typeof msg !== "object") {
+		return msg;
+	}
+
+	try {
+		if (msg.previews) {
+			msg.previews = reactive(msg.previews) as typeof msg.previews;
+		}
+	} catch {
+		// If reactivity setup fails (e.g. torn-down scope), keep the message usable.
 	}
 
 	return markRaw(msg);
 }
 
+/**
+ * Marks an array of messages raw for Vue.
+ *
+ * @param msgs - Messages to mark; non-arrays yield [].
+ * @returns New array with each message marked raw.
+ */
 export function markMsgsRaw<T extends SharedMsg>(msgs: T[]): T[] {
+	if (!Array.isArray(msgs)) {
+		return [];
+	}
+
 	return msgs.map(markMsgRaw);
 }
 
@@ -38,23 +65,56 @@ export function markMsgsRaw<T extends SharedMsg>(msgs: T[]): T[] {
 // of arguments at once.
 const APPEND_CHUNK_SIZE = 1000;
 
+/**
+ * Prepends items to a target array in bounded chunks (same reference).
+ *
+ * No-ops on invalid inputs so concurrent history merges never throw.
+ *
+ * @param target - Array to prepend into (mutated in place).
+ * @param items - Items to prepend, oldest-first order preserved.
+ */
 export function unshiftMany<T>(target: T[], items: T[]): void {
+	if (!Array.isArray(target) || !Array.isArray(items) || items.length === 0) {
+		return;
+	}
+
 	for (let end = items.length; end > 0; end -= APPEND_CHUNK_SIZE) {
 		const start = Math.max(0, end - APPEND_CHUNK_SIZE);
 		target.splice(0, 0, ...items.slice(start, end));
 	}
 }
 
+/**
+ * Appends items to a target array in bounded chunks (same reference).
+ *
+ * @param target - Array to append into (mutated in place).
+ * @param items - Items to append.
+ */
 export function pushMany<T>(target: T[], items: T[]): void {
+	if (!Array.isArray(target) || !Array.isArray(items) || items.length === 0) {
+		return;
+	}
+
 	for (let start = 0; start < items.length; start += APPEND_CHUNK_SIZE) {
 		target.push(...items.slice(start, start + APPEND_CHUNK_SIZE));
 	}
 }
 
+/**
+ * Converts a shared (server) channel payload into a client channel model.
+ *
+ * Defensive against missing message lists so init-time payloads never throw.
+ *
+ * @param shared - Server-provided channel payload.
+ * @returns Hydrated client channel.
+ */
 export function toClientChan(shared: SharedNetworkChan): ClientChan {
-	const history: string[] = [""].concat(extractInputHistory(shared.messages, 99));
+	const messages = Array.isArray(shared?.messages) ? shared.messages : [];
+	const totalMessages =
+		typeof shared?.totalMessages === "number" ? shared.totalMessages : messages.length;
+	const history: string[] = [""].concat(extractInputHistory(messages, 99));
 	// filter the unused vars
-	const {messages, totalMessages: _, ...props} = shared;
+	const {messages: _messages, totalMessages: _, ...props} = shared;
 	const channel: ClientChan = {
 		...props,
 		editTopic: false,
@@ -65,7 +125,7 @@ export function toClientChan(shared: SharedNetworkChan): ClientChan {
 		typingNicks: [],
 		users: [],
 		usersOutdated: shared.type === ChanType.CHANNEL ? true : false,
-		moreHistoryAvailable: shared.totalMessages > shared.messages.length,
+		moreHistoryAvailable: totalMessages > messages.length,
 		newerMessagesAvailable: false,
 		inputHistory: history,
 		replyingTo: null,

@@ -1,11 +1,35 @@
-export default (stringUri: string) => {
-	const data = {
+export type ParsedIrcUri = {
+	name: string;
+	host: string;
+	port: string;
+	join: string;
+	tls: boolean;
+};
+
+/**
+ * Parses an irc:// or ircs:// URI into connect-form defaults.
+ *
+ * Never throws: non-string or unparseable input yields a blank result object,
+ * and unknown schemes yield undefined so callers can fall back cleanly.
+ * Hostnames are lowercased and ports validated to keep router query params
+ * well-formed.
+ *
+ * @param stringUri - URI such as "ircs://example.com:6697/#chan".
+ * @returns Parsed host/port/join/tls fields, {} for bad hosts, or undefined
+ * for non-IRC schemes.
+ */
+export default (stringUri: string): ParsedIrcUri | Record<string, never> | undefined => {
+	const data: ParsedIrcUri = {
 		name: "",
 		host: "",
 		port: "",
 		join: "",
 		tls: false,
 	};
+
+	if (typeof stringUri !== "string" || !stringUri) {
+		return data;
+	}
 
 	try {
 		// https://tools.ietf.org/html/draft-butcher-irc-url-04
@@ -35,7 +59,11 @@ export default (stringUri: string) => {
 			return {};
 		}
 
-		data.host = data.name = uri.hostname;
+		if (uri.port && !/^\d+$/.test(uri.port)) {
+			return {};
+		}
+
+		data.host = data.name = uri.hostname.toLowerCase();
 		data.port = uri.port;
 
 		let channel = "";
