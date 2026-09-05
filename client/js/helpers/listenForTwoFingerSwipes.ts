@@ -1,7 +1,14 @@
 import distance from "./distance";
 
-// onTwoFingerSwipe will be called with a cardinal direction ("n", "e", "s" or
-// "w") as its only argument.
+/**
+ * Listens for two-finger swipe gestures and reports a cardinal direction.
+ *
+ * Callbacks are invoked synchronously from the `touchend` handler; any error
+ * thrown by the callback is caught so the internal history is always reset
+ * and listener state can never be left stale for the next gesture.
+ *
+ * @param onTwoFingerSwipe Called with `"n"`, `"e"`, `"s"` or `"w"` on swipe.
+ */
 function listenForTwoFingerSwipes(onTwoFingerSwipe) {
 	let history: {
 		center: number[];
@@ -53,7 +60,11 @@ function listenForTwoFingerSwipes(onTwoFingerSwipe) {
 				const direction = getSwipe(history);
 
 				if (direction) {
-					onTwoFingerSwipe(direction);
+					try {
+						onTwoFingerSwipe(direction);
+					} catch {
+						// Never let a consumer callback break gesture handling.
+					}
 				}
 			} finally {
 				history = [];
@@ -76,7 +87,7 @@ function getSwipe(hist) {
 	// Speed is in pixels/millisecond. Must be maintained throughout swipe.
 	const MIN_SWIPE_SPEED = 0.2;
 
-	if (hist.length < 2) {
+	if (!Array.isArray(hist) || hist.length < 2) {
 		return null;
 	}
 
@@ -84,11 +95,24 @@ function getSwipe(hist) {
 		const previous = hist[i - 1];
 		const current = hist[i];
 
-		const speed =
-			distance(previous.center, current.center) /
-			Math.abs(previous.timestamp - current.timestamp);
+		if (
+			!previous ||
+			!current ||
+			!Array.isArray(previous.center) ||
+			!Array.isArray(current.center)
+		) {
+			return null;
+		}
 
-		if (speed < MIN_SWIPE_SPEED) {
+		const deltaTime = Math.abs(previous.timestamp - current.timestamp);
+
+		if (!Number.isFinite(deltaTime) || deltaTime === 0) {
+			return null;
+		}
+
+		const speed = distance(previous.center, current.center) / deltaTime;
+
+		if (!Number.isFinite(speed) || speed < MIN_SWIPE_SPEED) {
 			return null;
 		}
 	}
@@ -97,8 +121,18 @@ function getSwipe(hist) {
 }
 
 function getCardinalDirection([x1, y1], [x2, y2]) {
+	// A vertical line has no run: fall back to north/south to avoid
+	// dividing by zero and producing NaN/Infinity tangents.
+	if (x2 === x1) {
+		return y1 < y2 ? "s" : "n";
+	}
+
 	// If θ is the angle of the vector then this is tan(θ)
 	const tangent = (y2 - y1) / (x2 - x1);
+
+	if (!Number.isFinite(tangent)) {
+		return y1 < y2 ? "s" : "n";
+	}
 
 	// All values of |tan(-45° to 45°)| are less than 1, same for 145° to 225°
 	if (Math.abs(tangent) < 1) {
