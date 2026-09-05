@@ -1,3 +1,14 @@
+/**
+ * Parses an `irc://` or `ircs://` URI into connection details.
+ *
+ * Never throws: non-string or malformed input yields a default (empty)
+ * result, an unsupported scheme yields `undefined`, and a missing hostname
+ * yields `{}` (preserving historical behavior relied upon by callers/tests).
+ *
+ * @param stringUri IRC URI to parse (e.g. `ircs://example.com:6697/#chan`).
+ * @returns Parsed `{name, host, port, join, tls}` data, `{}` when the
+ * hostname is missing, or `undefined` for unsupported schemes.
+ */
 export default (stringUri: string) => {
 	const data = {
 		name: "",
@@ -6,6 +17,10 @@ export default (stringUri: string) => {
 		join: "",
 		tls: false,
 	};
+
+	if (typeof stringUri !== "string") {
+		return data;
+	}
 
 	try {
 		// https://tools.ietf.org/html/draft-butcher-irc-url-04
