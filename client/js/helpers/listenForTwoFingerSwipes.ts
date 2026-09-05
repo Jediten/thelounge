@@ -1,12 +1,37 @@
 import distance from "./distance";
 
+export type SwipeDirection = "n" | "e" | "s" | "w";
+
+type TouchCenter = [number, number];
+
+type SwipePoint = {
+	center: TouchCenter;
+	timestamp: number;
+};
+
 // onTwoFingerSwipe will be called with a cardinal direction ("n", "e", "s" or
 // "w") as its only argument.
-function listenForTwoFingerSwipes(onTwoFingerSwipe) {
-	let history: {
-		center: number[];
-		timestamp: number;
-	}[] = [];
+//
+// Never throws: a non-function callback is ignored, and listener setup is
+// skipped outside a DOM environment, so importing this module on the server
+// (SSR/tests) cannot crash. History is reset after every gesture (`touchend`
+// and `touchcancel`), so concurrent or interrupted touches cannot leak state
+// into the next swipe (no cross-gesture race).
+/**
+ * Listens for two-finger swipe gestures and reports their cardinal direction.
+ *
+ * @param onTwoFingerSwipe Callback invoked with `"n" | "e" | "s" | "w"`.
+ */
+function listenForTwoFingerSwipes(onTwoFingerSwipe: (direction: SwipeDirection) => void) {
+	if (typeof onTwoFingerSwipe !== "function") {
+		return;
+	}
+
+	if (typeof document === "undefined" || typeof window === "undefined") {
+		return;
+	}
+
+	let history: SwipePoint[] = [];
 
 	document.body.addEventListener(
 		"touchmove",
@@ -23,7 +48,7 @@ function listenForTwoFingerSwipes(onTwoFingerSwipe) {
 			}
 
 			const timestamp = window.performance.now();
-			const center = [(a.screenX + b.screenX) / 2, (a.screenY + b.screenY) / 2];
+			const center: TouchCenter = [(a.screenX + b.screenX) / 2, (a.screenY + b.screenY) / 2];
 
 			if (history.length > 0) {
 				const last = history[history.length - 1];
@@ -72,11 +97,11 @@ function listenForTwoFingerSwipes(onTwoFingerSwipe) {
 }
 
 // Returns the cardinal direction of the swipe or null if there is no swipe.
-function getSwipe(hist) {
+function getSwipe(hist: SwipePoint[]): SwipeDirection | null {
 	// Speed is in pixels/millisecond. Must be maintained throughout swipe.
 	const MIN_SWIPE_SPEED = 0.2;
 
-	if (hist.length < 2) {
+	if (!Array.isArray(hist) || hist.length < 2) {
 		return null;
 	}
 
@@ -84,19 +109,49 @@ function getSwipe(hist) {
 		const previous = hist[i - 1];
 		const current = hist[i];
 
-		const speed =
-			distance(previous.center, current.center) /
-			Math.abs(previous.timestamp - current.timestamp);
+		if (!previous || !current) {
+			return null;
+		}
 
-		if (speed < MIN_SWIPE_SPEED) {
+		const timeDelta = Math.abs(previous.timestamp - current.timestamp);
+
+		if (!Number.isFinite(timeDelta) || timeDelta <= 0) {
+			return null;
+		}
+
+		const speed = distance(previous.center, current.center) / timeDelta;
+
+		if (!Number.isFinite(speed) || speed < MIN_SWIPE_SPEED) {
 			return null;
 		}
 	}
 
-	return getCardinalDirection(hist[0].center, hist[hist.length - 1].center);
+	const first = hist[0];
+	const last = hist[hist.length - 1];
+
+	if (!first || !last) {
+		return null;
+	}
+
+	return getCardinalDirection(first.center, last.center);
 }
 
-function getCardinalDirection([x1, y1], [x2, y2]) {
+function getCardinalDirection([x1, y1]: TouchCenter, [x2, y2]: TouchCenter): SwipeDirection {
+	// Guard non-finite touch coordinates (can occur on synthetic events):
+	// fall back to a deterministic direction instead of NaN comparisons.
+	if (
+		!Number.isFinite(x1) ||
+		!Number.isFinite(y1) ||
+		!Number.isFinite(x2) ||
+		!Number.isFinite(y2)
+	) {
+		return "e";
+	}
+
+	if (x1 === x2) {
+		return y1 < y2 ? "s" : "n";
+	}
+
 	// If θ is the angle of the vector then this is tan(θ)
 	const tangent = (y2 - y1) / (x2 - x1);
 

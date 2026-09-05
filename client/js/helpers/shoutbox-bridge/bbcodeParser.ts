@@ -36,7 +36,8 @@ const supportedTags = new Set([
 	"li",
 ]);
 
-const tagRegex = /\[(\/)?([a-z*]+)(?:=([^\]]+))?\]/gi;
+const tagRegexSource = /\[(\/)?([a-z*]+)(?:=([^\]]+))?\]/.source;
+const tagRegexFlags = "gi";
 
 function appendText(node: BbcodeNode, text: string) {
 	if (text) {
@@ -54,17 +55,116 @@ function findLastTagIndex(stack: BbcodeNode[], tagName: string) {
 	return -1;
 }
 
+// Only these URL schemes are safe to render as clickable links. Anything
+// else (javascript:, data:, vbscript:, ...) is dropped to plain text so a
+// malicious `[url=javascript:...]` cannot execute script on click.
+const SAFE_URL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+
+function sanitizeUrl(href: string): string | null {
+	if (typeof href !== "string") {
+		return null;
+	}
+
+	const trimmed = href.trim();
+
+	if (trimmed.length === 0) {
+		return null;
+	}
+
+	try {
+		const parsed = new URL(trimmed, window.location.origin);
+
+		if (SAFE_URL_SCHEMES.has(parsed.protocol)) {
+			return trimmed;
+		}
+
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+// Allow only safe CSS color values (hex, rgb()/hsl(), plain color names) so
+// a `[color=...]` attr cannot inject arbitrary style declarations.
+function sanitizeColor(value: string | undefined): string | undefined {
+	if (typeof value !== "string") {
+		return undefined;
+	}
+
+	const trimmed = value.trim();
+
+	if (/^#[0-9a-f]{3,8}$/i.test(trimmed)) {
+		return trimmed;
+	}
+
+	if (/^(rgb|rgba|hsl|hsla)\(.*\)$/i.test(trimmed)) {
+		return trimmed;
+	}
+
+	if (/^[a-z]+$/i.test(trimmed)) {
+		return trimmed;
+	}
+
+	return undefined;
+}
+
+// Font sizes arrive as raw attr text appended with "px" at render time;
+// accept only a finite number so `[size=...]` cannot inject CSS.
+function sanitizeSize(value: string | undefined): string | undefined {
+	if (typeof value !== "string") {
+		return undefined;
+	}
+
+	const num = Number.parseFloat(value);
+
+	if (!Number.isFinite(num)) {
+		return undefined;
+	}
+
+	const clamped = Math.min(Math.max(num, 1), 72);
+	return `${clamped}px`;
+}
+
+// Font families arrive as raw attr text; strip CSS delimiters so one attr
+// cannot break out into additional declarations.
+function sanitizeFont(value: string | undefined): string | undefined {
+	if (typeof value !== "string") {
+		return undefined;
+	}
+
+	const cleaned = value
+		.replace(/[;"'\\]/g, "")
+		.trim()
+		.slice(0, 100);
+
+	return cleaned.length > 0 ? cleaned : undefined;
+}
+
 function parseBbcode(text: string) {
+	if (typeof text !== "string") {
+		return [];
+	}
+
 	const root: BbcodeNode = {tag: "root", children: []};
 	const stack = [root];
 	let lastIndex = 0;
 
-	for (const match of text.matchAll(tagRegex)) {
+	// Build a fresh RegExp per call instead of reusing a shared `g`-flag one:
+	// `String.matchAll` seeds the matcher from the regex's `lastIndex`, so a
+	// shared instance would let one parse shift the next (cross-message race).
+	const localTagRegex = new RegExp(tagRegexSource, tagRegexFlags);
+
+	for (const match of text.matchAll(localTagRegex)) {
 		const [fullMatch, isClosing, rawTag, rawAttr] = match;
 		const current = stack[stack.length - 1];
 
-		appendText(current, text.slice(lastIndex, match.index));
-		lastIndex = match.index + fullMatch.length;
+		if (!current || typeof rawTag !== "string") {
+			continue;
+		}
+
+		const matchIndex = match.index ?? lastIndex;
+		appendText(current, text.slice(lastIndex, matchIndex));
+		lastIndex = matchIndex + fullMatch.length;
 
 		const tag = rawTag.toLowerCase();
 
@@ -122,7 +222,8 @@ function parseBbcode(text: string) {
 		stack.push(node);
 	}
 
-	appendText(stack[stack.length - 1], text.slice(lastIndex));
+	const top = stack[stack.length - 1] ?? root;
+	appendText(top, text.slice(lastIndex));
 
 	return root.children;
 }
@@ -164,6 +265,10 @@ function renderChildren(
 	message?: ClientMessage,
 	network?: ClientNetwork
 ): Array<VNode | string> {
+	if (!Array.isArray(nodes)) {
+		return [];
+	}
+
 	return nodes.flatMap((node) => renderNode(node, message, network));
 }
 
@@ -178,6 +283,10 @@ function renderNode(
 		>;
 
 		return flatten(parsed);
+	}
+
+	if (!node || typeof node !== "object" || !Array.isArray(node.children)) {
+		return [];
 	}
 
 	const children = renderChildren(node.children, message, network);
@@ -195,36 +304,45 @@ function renderNode(
 			return [createElement("span", {class: ["irc-strikethrough"]}, children)];
 		case "code":
 			return [createElement("span", {class: ["irc-monospace"]}, collectText(node.children))];
-		case "color":
+		case "color": {
+			const color = sanitizeColor(node.attr);
 			return [
 				createElement(
 					"span",
 					{
-						style: node.attr ? {color: node.attr} : undefined,
+						style: color ? {color} : undefined,
 					},
 					children
 				),
 			];
-		case "size":
+		}
+
+		case "size": {
+			const fontSize = sanitizeSize(node.attr);
 			return [
 				createElement(
 					"span",
 					{
-						style: node.attr ? {fontSize: node.attr + "px"} : undefined,
+						style: fontSize ? {fontSize} : undefined,
 					},
 					children
 				),
 			];
-		case "font":
+		}
+
+		case "font": {
+			const fontFamily = sanitizeFont(node.attr);
 			return [
 				createElement(
 					"span",
 					{
-						style: node.attr ? {fontFamily: node.attr} : undefined,
+						style: fontFamily ? {fontFamily} : undefined,
 					},
 					children
 				),
 			];
+		}
+
 		case "left":
 		case "center":
 		case "right":
@@ -284,7 +402,13 @@ function renderNode(
 			return [createElement("li", undefined, children)];
 
 		case "url": {
-			const href = node.attr || collectText(node.children);
+			const rawHref = node.attr || collectText(node.children);
+			const href = sanitizeUrl(rawHref);
+
+			if (!href) {
+				return children;
+			}
+
 			return [
 				createElement(
 					"a",
@@ -307,10 +431,30 @@ function renderNode(
 	}
 }
 
+/**
+ * Renders shoutbox BBCode into Vue nodes for display.
+ *
+ * Never throws: non-string input yields an empty list and per-node render
+ * failures degrade to plain text, so one malformed bridged message cannot
+ * break the whole channel view.
+ *
+ * @param text Raw message text containing BBCode tags.
+ * @param message Message context forwarded to the IRC parser for plain text.
+ * @param network Network context forwarded to the IRC parser.
+ * @returns Flat array of Vue nodes/strings to render.
+ */
 export default function bbcodeParser(
 	text: string,
 	message?: ClientMessage,
 	network?: ClientNetwork
 ) {
-	return flatten(renderChildren(parseBbcode(text), message, network));
+	if (typeof text !== "string") {
+		return [];
+	}
+
+	try {
+		return flatten(renderChildren(parseBbcode(text), message, network));
+	} catch {
+		return [text];
+	}
 }

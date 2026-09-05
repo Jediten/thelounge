@@ -1,11 +1,36 @@
-export default (stringUri: string) => {
-	const data = {
+export type ParsedIrcUri = {
+	name: string;
+	host: string;
+	port: string;
+	join: string;
+	tls: boolean;
+};
+
+/**
+ * Parses an `irc://` or `ircs://` URI into connect-window fields.
+ *
+ * Never throws: non-string or unparsable input yields an empty object (`{}`),
+ * and unexpected `URL` errors degrade to the empty default instead of
+ * crashing query-param handling. Returns `undefined` for well-formed URLs
+ * with a non-IRC scheme so callers can tell "not an IRC link" apart from
+ * "malformed IRC link" (`{}`).
+ *
+ * @param stringUri Raw URI string (e.g. from `?uri=` query param).
+ * @returns Parsed `{name, host, port, join, tls}`, `{}` when malformed, or
+ * `undefined` when the scheme is not `irc:`/`ircs:`.
+ */
+export default (stringUri: string): ParsedIrcUri | Record<string, never> | undefined => {
+	const data: ParsedIrcUri = {
 		name: "",
 		host: "",
 		port: "",
 		join: "",
 		tls: false,
 	};
+
+	if (typeof stringUri !== "string" || stringUri.length === 0) {
+		return {};
+	}
 
 	try {
 		// https://tools.ietf.org/html/draft-butcher-irc-url-04
@@ -51,7 +76,9 @@ export default (stringUri: string) => {
 		// We don't split channels or append # here because the connect window takes care of that
 		data.join = channel;
 	} catch (e) {
-		// do nothing on invalid uri
+		// Malformed URI (bad port, invalid URL, ...): report empty instead of
+		// leaking a half-filled default or throwing inside query-param handling.
+		return {};
 	}
 
 	return data;
