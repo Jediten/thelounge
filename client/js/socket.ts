@@ -3,8 +3,32 @@ import type {ServerToClientEvents, ClientToServerEvents} from "../../shared/type
 
 type Socket = rawSocket<ServerToClientEvents, ClientToServerEvents>;
 
+/**
+ * Parses the socket.io transports list rendered into the page.
+ *
+ * Never throws: malformed JSON degrades to the default transports so a
+ * bad server template cannot prevent connecting.
+ *
+ * @returns Configured transports, or the polling+websocket default.
+ */
+function parseTransports(): string[] {
+	const fallback = ["polling", "websocket"];
+	const raw = document.body.dataset.transports;
+
+	if (!raw) {
+		return fallback;
+	}
+
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed : fallback;
+	} catch {
+		return fallback;
+	}
+}
+
 const socket: Socket = io({
-	transports: JSON.parse(document.body.dataset.transports || "['polling', 'websocket']"),
+	transports: parseTransports(),
 	path: window.location.pathname + "socket.io/",
 	autoConnect: false,
 	reconnection: !document.body.classList.contains("public"),

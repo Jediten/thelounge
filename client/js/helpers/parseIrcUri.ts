@@ -1,3 +1,13 @@
+/**
+ * Parses an irc:// or ircs:// URI into connect-window fields.
+ *
+ * Never throws: invalid URIs degrade to undefined (or a partial
+ * result), so a bad link cannot break the connect flow.
+ *
+ * @param stringUri Raw URI string from a link or query param.
+ * @returns Parsed fields, an empty object when no host, or undefined
+ * for non-IRC schemes / unparseable input.
+ */
 export default (stringUri: string) => {
 	const data = {
 		name: "",
