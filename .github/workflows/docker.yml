@@ -25,7 +25,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/PUT-Request/thelounge
+          images: ghcr.io/jediten/thelounge
           tags: |
             type=ref,event=branch
             type=ref,event=pr
