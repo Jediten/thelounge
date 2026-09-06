@@ -2,26 +2,34 @@ name: Styx Code Review
 
 on:
   push:
-    branches: [master]
+    branches: [master, main]
   workflow_dispatch:
+
+# Cancel previous run on new push
+concurrency:
+  group: styx-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   review:
+    if: "!contains(github.event.head_commit.message, 'Styx:')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
-      issues: write
-      discussions: write
-      actions: read
-      id-token: write
-      statuses: write
-      checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           fetch-depth: 0
-          persist-credentials: true
+          # Do not expose a repository write credential to downloaded code or
+          # to the model-driven step. The final publishing step authenticates
+          # independently after all generated work has completed.
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v4
+        with:
+          node-version: "24"
 
       - name: Configure git
         run: |
@@ -30,43 +38,46 @@ jobs:
 
       - name: Download Styx
         run: |
-          curl -L -o /tmp/styx https://styx-44p.pages.dev/styx-linux-amd64
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output /tmp/styx https://styx-44p.pages.dev/styx-linux-amd64
+          echo "ad60f44b596f333ba3a662a0e021be14f9505cfd26c5da1a93fdfad2757fd14a  /tmp/styx" \
+            | sha256sum --check --strict
           chmod +x /tmp/styx
 
       - name: Run Styx
         env:
           STYX_API_ENDPOINT: ${{ secrets.STYX_API_ENDPOINT }}
           STYX_API_KEY: ${{ secrets.STYX_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: /tmp/styx --run styx.yaml
 
       - name: Push and open PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Find any styx branch pushed by the model
-          BRANCH=$(git branch -r --list 'origin/styx/*' | head -1 | sed 's|origin/||' | xargs)
-          if [ -z "$BRANCH" ]; then
-            echo "No styx/* branch found, skipping push/PR"
-            exit 0
-          fi
+          set -euo pipefail
+          BRANCH=$(git branch --show-current)
 
-          echo "Pushing branch: $BRANCH"
-          git push -u origin "$BRANCH"
+          case "$BRANCH" in
+            styx/*) ;;
+            *)
+              echo "::error::Styx did not leave its changes on a styx/* branch (current: $BRANCH)"
+              exit 1
+              ;;
+          esac
 
-          # Try to open PR, don't fail if not permitted
-          if ! gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' | grep -q .; then
-            echo "Opening PR for $BRANCH"
-            if gh pr create \
-              --base master \
+          echo "Found branch: $BRANCH"
+
+          gh auth setup-git
+          git push --set-upstream origin "HEAD:refs/heads/$BRANCH"
+
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+
+          if [ -z "$EXISTING_PR" ]; then
+            gh pr create \
+              --base "$GITHUB_REF_NAME" \
               --head "$BRANCH" \
               --title "Styx: auto-fixes from $(date -u +%Y-%m-%d)" \
-              --body "Automated code review fixes by Styx."; then
-              echo "PR created successfully"
-            else
-              echo "::warning::gh pr create failed — create PR manually at:"
-              echo "::warning::https://github.com/${{ github.repository }}/pull/new/$BRANCH"
-            fi
+              --body "Automated code review fixes by Styx. Review and test every change before merging."
           else
-            echo "PR already exists for $BRANCH"
+            echo "PR #$EXISTING_PR already exists"
           fi

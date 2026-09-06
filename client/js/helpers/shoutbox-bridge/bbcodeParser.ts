@@ -54,7 +54,22 @@ function findLastTagIndex(stack: BbcodeNode[], tagName: string) {
 	return -1;
 }
 
+function safeLinkTarget(value: string): string | null {
+	try {
+		const url = new URL(value);
+		return url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:"
+			? url.href
+			: null;
+	} catch {
+		return null;
+	}
+}
+
 function parseBbcode(text: string) {
+	// The module-level tagRegex carries the global flag and is therefore
+	// stateful (lastIndex). matchAll clones the pattern internally, but
+	// reset explicitly so sequential parses can never leak cursor state.
+	tagRegex.lastIndex = 0;
 	const root: BbcodeNode = {tag: "root", children: []};
 	const stack = [root];
 	let lastIndex = 0;
@@ -284,7 +299,12 @@ function renderNode(
 			return [createElement("li", undefined, children)];
 
 		case "url": {
-			const href = node.attr || collectText(node.children);
+			const href = safeLinkTarget(node.attr || collectText(node.children));
+
+			if (!href) {
+				return children;
+			}
+
 			return [
 				createElement(
 					"a",
@@ -292,7 +312,7 @@ function renderNode(
 						href,
 						dir: "auto",
 						target: "_blank",
-						rel: "noopener",
+						rel: "noopener noreferrer",
 					},
 					children
 				),

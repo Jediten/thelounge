@@ -56,9 +56,36 @@ socket.on("init", async function (data) {
 	}
 });
 
-function mergeNetworkData(newNetworks: SharedNetwork[]): ClientNetwork[] {
+/**
+ * Reads the set of collapsed network UUIDs from local storage.
+ *
+ * Never throws: corrupted JSON degrades to an empty set so one bad
+ * value cannot break the init merge.
+ *
+ * @returns Set of collapsed network UUIDs.
+ */
+function readCollapsedNetworks(): Set<string> {
 	const stored = storage.get("thelounge.networks.collapsed");
-	const collapsedNetworks = stored ? new Set(JSON.parse(stored)) : new Set();
+
+	if (!stored) {
+		return new Set();
+	}
+
+	try {
+		const parsed: unknown = JSON.parse(stored);
+
+		if (!Array.isArray(parsed)) {
+			return new Set<string>();
+		}
+
+		return new Set(parsed.filter((entry): entry is string => typeof entry === "string"));
+	} catch {
+		return new Set<string>();
+	}
+}
+
+function mergeNetworkData(newNetworks: SharedNetwork[]): ClientNetwork[] {
+	const collapsedNetworks = readCollapsedNetworks();
 	const result: ReturnType<typeof mergeNetworkData> = [];
 
 	for (const sharedNet of newNetworks) {
@@ -175,9 +202,23 @@ async function handleQueryParams() {
 	if (params.has("uri")) {
 		// Set default connection settings from IRC protocol links
 		const uri = params.get("uri");
-		const queryParams = parseIrcUri(String(uri));
+		const parsed = parseIrcUri(String(uri));
 		removeQueryParams();
-		await router.push({name: "Connect", query: queryParams});
+
+		if (parsed) {
+			// Route query values serialize to strings in the URL; convert
+			// explicitly (e.g. the tls boolean) instead of relying on it
+			const query: Record<string, string> = {};
+
+			for (const [key, value] of Object.entries(parsed)) {
+				query[key] = String(value);
+			}
+
+			await router.push({name: "Connect", query});
+		} else {
+			await router.push({name: "Connect"});
+		}
+
 		return true;
 	}
 
